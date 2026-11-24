@@ -17,6 +17,13 @@ cd "$REPO_ROOT"
 
 mkdir -p "$OUT" "$SRC"
 
+# YTLite imports <roothide.h> unconditionally. Theos only ships that header for
+# roothide builds, so drop the identity shim into the Theos include path.
+if [ -d "$THEOS/include" ]; then
+    cp -f ios/shims/roothide.h "$THEOS/include/roothide.h"
+fi
+export CPATH="$REPO_ROOT/ios/shims${CPATH:+:$CPATH}"
+
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 
 # YTLite 3.0.1 era (2026-11-18)
@@ -64,6 +71,12 @@ if want ytlite; then
     echo "==> YTLite"
     fetch "$YTLITE_REPO" "$SRC/YTLite" "$YTLITE_REF"
     build "$SRC/YTLite" YTLite
+    # localisation / assets, loaded through [NSBundle pathForResource:@"YTLite" ofType:@"bundle"]
+    if [ -d "$SRC/YTLite/layout/Library/Application Support/YTLite.bundle" ]; then
+        rm -rf "$OUT/YTLite.bundle"
+        cp -R "$SRC/YTLite/layout/Library/Application Support/YTLite.bundle" "$OUT/YTLite.bundle"
+        echo "  bundle: YTLite.bundle"
+    fi
 fi
 
 if want pip; then

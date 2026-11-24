@@ -99,7 +99,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: YouTube-tweaks
-          path: build/tweaks/*.dylib
+          path: |
+            build/tweaks/*.dylib
+            build/tweaks/*.bundle
           if-no-files-found: error
           retention-days: 14
 
@@ -151,8 +153,12 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           OUT="dist/${APP_NAME// /-}-${{ steps.ipa.outputs.version }}.ipa"
+          ITEMS=(build/tweaks/*.dylib)
+          if [ -d build/tweaks/YTLite.bundle ]; then
+            ITEMS+=(build/tweaks/YTLite.bundle)
+          fi
           cyan -i work/youtube.ipa -o "$OUT" \
-            -f build/tweaks/*.dylib \
+            -f "${ITEMS[@]}" \
             -n "$APP_NAME" \
             -b "$BUNDLE_ID" \
             -m 15.0 \
