@@ -33,6 +33,7 @@ PIP_REPO="https://github.com/PoomSmart/YouPiP.git"
 PIP_REF="${PIP_REF:-034477a48c8ec18736e26d054106df88c1f0deb3}"
 YTH_REPO="https://github.com/PoomSmart/YouTubeHeader.git"
 PSH_REPO="https://github.com/PoomSmart/PSHeader.git"
+YTVO_REPO="https://github.com/PoomSmart/YTVideoOverlay.git"
 
 # YTLite / YouPiP both import <roothide.h>. Theos only ships it for roothide
 # builds, so drop an identity shim into the Theos include path.
@@ -99,6 +100,7 @@ if want pip; then
     fetch "$PIP_REPO" "$SRC/YouPiP" "$PIP_REF"
     fetch "$YTH_REPO" "$SRC/YouTubeHeader"
     fetch "$PSH_REPO" "$SRC/PSHeader"
+    fetch "$YTVO_REPO" "$SRC/YTVideoOverlay"
     build_source "$SRC/YouPiP" YouPiP 0
 fi
 
