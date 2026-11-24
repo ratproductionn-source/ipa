@@ -1,0 +1,9 @@
+Package: com.ratproduction.ytbypass
+Name: YTBypass
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: Network-level ad and tracking blocker for the injected YouTube client
+Maintainer: ratproductionn-source
+Author: ratproductionn-source
+Section: Tweaks
+Depends: mobilesubstrate

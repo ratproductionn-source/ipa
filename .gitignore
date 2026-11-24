@@ -1,0 +1,32 @@
+# build output
+build/
+dist/
+work/
+*.ipa
+*.tipa
+*.apk
+*.deb
+*.dylib
+*.rvp
+*.mpp
+
+# theos
+.theos/
+theos/
+sdks/
+packages/
+
+# toolchain / caches
+tools/
+.cache/
+jdk*/
+jre*/
+*.jar
+*.zip
+
+# secrets
+*.p12
+*.mobileprovision
+*.provisionprofile
+.env
+keys/

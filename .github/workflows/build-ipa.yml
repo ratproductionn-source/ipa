@@ -1,0 +1,197 @@
+name: build-ipa
+
+# Builds a YouTube IPA with Premium-like features by injecting tweaks into a
+# decrypted YouTube .ipa that you supply. Nothing is downloaded from the App
+# Store here: the IPA source has to come from your own device.
+#
+# Without an IPA source the run still succeeds and publishes the compiled
+# tweaks, so the toolchain can be verified before the IPA is available.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ipa_url:
+        description: "Direct URL to your own decrypted YouTube .ipa (blank = use the YOUTUBE_IPA_URL secret)"
+        required: false
+        default: ""
+      tweaks:
+        description: "Comma separated tweak keys: ytlite,pip,ytbypass"
+        required: false
+        default: "ytlite,pip,ytbypass"
+      app_name:
+        description: "Display name of the finished app"
+        required: false
+        default: "YouTube"
+      bundle_id:
+        description: "Bundle identifier of the finished app"
+        required: false
+        default: "com.google.ios.youtube"
+      sign:
+        description: "Sign with the SIGN_* secrets instead of fakesigning"
+        type: boolean
+        default: false
+      release:
+        description: "Attach the finished IPA to a draft GitHub release"
+        type: boolean
+        default: false
+  push:
+    tags:
+      - "ipa-*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  THEOS: ${{ github.workspace }}/theos
+  IOS_SDK: "16.5"
+  TWEAK_KEYS: ${{ github.event.inputs.tweaks || 'ytlite,pip,ytbypass' }}
+  APP_NAME: ${{ github.event.inputs.app_name || 'YouTube' }}
+  BUNDLE_ID: ${{ github.event.inputs.bundle_id || 'com.google.ios.youtube' }}
+
+jobs:
+  build:
+    name: Build patched YouTube IPA
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          brew install ldid dpkg make xz jq pipx
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          pipx install --force https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+
+      - name: Setup Theos
+        run: |
+          set -euo pipefail
+          if [ ! -d "$THEOS/.git" ]; then
+            git clone --quiet https://github.com/theos/theos.git "$THEOS"
+          fi
+          git -C "$THEOS" submodule update --init --recursive --depth 1
+
+      - name: Cache iOS SDK
+        id: sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/theos/sdks
+          key: ios-sdk-${{ env.IOS_SDK }}-v1
+
+      - name: Fetch iOS SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$THEOS/sdks"
+          tmp="$(mktemp -d)"
+          cd "$tmp"
+          git clone --quiet --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git sdk
+          cd sdk
+          git sparse-checkout set "iPhoneOS${IOS_SDK}.sdk"
+          cp -R "iPhoneOS${IOS_SDK}.sdk" "$THEOS/sdks/"
+
+      - name: Build tweaks
+        run: bash ios/scripts/build-tweaks.sh "$TWEAK_KEYS" build/tweaks
+
+      - name: Upload tweaks
+        uses: actions/upload-artifact@v4
+        with:
+          name: YouTube-tweaks
+          path: build/tweaks/*.dylib
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Resolve IPA source
+        id: source
+        env:
+          INPUT_URL: ${{ github.event.inputs.ipa_url }}
+          SECRET_URL: ${{ secrets.YOUTUBE_IPA_URL }}
+        run: |
+          set -euo pipefail
+          URL="${INPUT_URL:-$SECRET_URL}"
+          if [ -n "$URL" ]; then
+            echo "::add-mask::$URL"
+            echo "have_ipa=true" >> "$GITHUB_OUTPUT"
+            echo "url=$URL" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_ipa=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No YOUTUBE_IPA_URL secret and no ipa_url input - tweaks were built, IPA step skipped."
+          fi
+
+      - name: Fetch decrypted YouTube IPA
+        id: ipa
+        if: steps.source.outputs.have_ipa == 'true'
+        env:
+          URL: ${{ steps.source.outputs.url }}
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          curl -fL --retry 3 --retry-delay 5 --max-time 1800 -o work/youtube.ipa "$URL"
+          unzip -q work/youtube.ipa -d work/ipa
+          APP="$(find work/ipa/Payload -maxdepth 1 -name '*.app' -print -quit)"
+          if [ -z "$APP" ]; then
+            echo "::error::The archive has no Payload/*.app - this is not an IPA."
+            exit 1
+          fi
+          BIN_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")"
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")"
+          CRYPTID="$(otool -l "$APP/$BIN_NAME" | awk '/LC_ENCRYPTION_INFO/{f=1} f&&/cryptid/{print $2; exit}')"
+          if [ "${CRYPTID:-0}" != "0" ]; then
+            echo "::error::The main binary is still App Store encrypted (cryptid=${CRYPTID}). Supply a decrypted IPA."
+            exit 1
+          fi
+          echo "YouTube $VERSION, binary $BIN_NAME"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Inject tweaks
+        if: steps.source.outputs.have_ipa == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          OUT="dist/${APP_NAME// /-}-${{ steps.ipa.outputs.version }}.ipa"
+          cyan -i work/youtube.ipa -o "$OUT" \
+            -f build/tweaks/*.dylib \
+            -n "$APP_NAME" \
+            -b "$BUNDLE_ID" \
+            -m 15.0 \
+            -u -w -g -s
+          ls -lh dist
+          echo "IPA_PATH=$OUT" >> "$GITHUB_ENV"
+
+      - name: Sign with certificate
+        if: steps.source.outputs.have_ipa == 'true' && github.event.inputs.sign == 'true'
+        env:
+          SIGN_P12: ${{ secrets.SIGN_P12 }}
+          SIGN_P12_PASSWORD: ${{ secrets.SIGN_P12_PASSWORD }}
+          SIGN_PROFILE: ${{ secrets.SIGN_PROFILE }}
+        run: |
+          set -euo pipefail
+          bash ios/scripts/sign.sh "$IPA_PATH" "dist/signed.ipa"
+          mv -f dist/signed.ipa "$IPA_PATH"
+
+      - name: Upload IPA
+        if: steps.source.outputs.have_ipa == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: YouTube-IPA
+          path: dist/*.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Draft release
+        if: steps.source.outputs.have_ipa == 'true' && (github.event.inputs.release == 'true' || startsWith(github.ref, 'refs/tags/ipa-'))
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="build-$(date +%Y%m%d-%H%M%S)"
+          gh release create "$tag" dist/*.ipa \
+            --draft \
+            --title "YouTube IPA ${tag}" \
+            --notes "Tweaks: ${TWEAK_KEYS}. Built from a user-supplied decrypted IPA."
