@@ -65,7 +65,7 @@ Workflow: `.github/workflows/build-ipa.yml`
 
 The YouTube iOS app cannot be built from source, so the pipeline injects tweaks into a **decrypted YouTube IPA that you supply**:
 
-1. builds the tweaks listed in `ios/scripts/build-tweaks.sh` with Theos
+1. downloads the pinned YouTube Plus (YTLite) build and compiles YouPiP + YTBypass with Theos
 2. injects them with [cyan](https://github.com/asdfzxcvbn/pyzule-rw) (bundles ElleKit, rewrites substrate deps, fakesigns)
 3. optionally re-signs with your Apple certificate
 4. uploads the finished IPA as an artifact (and optionally a draft release)
@@ -74,9 +74,11 @@ Tweaks injected by default:
 
 | Key | Source | What it does |
 | --- | --- | --- |
-| `ytlite` | [dayanch96/YTLite](https://github.com/dayanch96/YTLite) | ad removal, background playback, UI cleanup — the main Premium-style payload |
+| `ytlite` | [dayanch96/YTLite](https://github.com/dayanch96/YTLite) v6.0 | ad removal, background playback, UI cleanup — the main Premium-style payload (tested upstream against YouTube 21.43.5) |
 | `pip` | [PoomSmart/YouPiP](https://github.com/PoomSmart/YouPiP) | picture-in-picture |
-| `ytbypass` | this repo | network-level ad/tracking blocker (doubleclick, `/pageid/`, `/api/stats/ads` …), defence in depth for promoted content that slips past the player hooks |
+| `ytbypass` | this repo | network-level ad/tracking blocker (doubleclick, `/pagead/`, `/api/stats/ads` …), defence in depth for promoted content that slips past the player hooks |
+
+`ytlite` and `ytbypass` are required for a useful build. `pip` is best effort: if upstream headers move, that step warns and the IPA is still produced.
 
 Your IPA must be **decrypted** (`cryptid == 0`). Dump it from a device you own, for example with `frida-ios-dump` on a jailbroken iPhone. The workflow checks this and stops with a clear error if the binary is still App Store encrypted.
 
