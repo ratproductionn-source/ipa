@@ -60,7 +60,7 @@ jobs:
       - name: Install build dependencies
         run: |
           set -euo pipefail
-          brew install ldid dpkg make xz jq pipx
+          brew install ldid dpkg make xz zstd jq pipx
           echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           pipx install --force https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
@@ -101,7 +101,7 @@ jobs:
           name: YouTube-tweaks
           path: |
             build/tweaks/*.dylib
-            build/tweaks/*.bundle
+            build/tweaks/*.deb
           if-no-files-found: error
           retention-days: 14
 
@@ -153,10 +153,11 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           OUT="dist/${APP_NAME// /-}-${{ steps.ipa.outputs.version }}.ipa"
-          ITEMS=(build/tweaks/*.dylib)
+          ITEMS=(build/tweaks/*.dylib build/tweaks/*.deb)
           if [ -d build/tweaks/YTLite.bundle ]; then
             ITEMS+=(build/tweaks/YTLite.bundle)
           fi
+          printf 'injecting: %s\n' "${ITEMS[@]}"
           cyan -i work/youtube.ipa -o "$OUT" \
             -f "${ITEMS[@]}" \
             -n "$APP_NAME" \

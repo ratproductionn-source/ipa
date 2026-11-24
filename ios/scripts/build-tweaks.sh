@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Builds the tweak dylibs that get injected into the decrypted YouTube IPA.
+# Collects the tweak payload that gets injected into the decrypted YouTube IPA.
 #
 # usage: build-tweaks.sh [keys] [outdir]
 #   keys   comma separated subset of: ytlite,pip,ytbypass   (default: all three)
-#   outdir where the .dylib files are collected             (default: build/tweaks)
+#   outdir where the payload is collected                   (default: build/tweaks)
+#
+# ytlite   released YouTube Plus .deb (upstream compiles it, we just pin it)
+# pip      YouPiP, built from source against the public YouTube headers
+# ytbypass this repo's tweak, built from source
 set -euo pipefail
 
 KEYS="${1:-ytlite,pip,ytbypass}"
@@ -16,45 +20,60 @@ cd "$REPO_ROOT"
 : "${THEOS:?THEOS must point at a Theos checkout}"
 
 mkdir -p "$OUT" "$SRC"
-
-# YTLite imports <roothide.h> unconditionally. Theos only ships that header for
-# roothide builds, so drop the identity shim into the Theos include path.
-if [ -d "$THEOS/include" ]; then
-    cp -f ios/shims/roothide.h "$THEOS/include/roothide.h"
-fi
-export CPATH="$REPO_ROOT/ios/shims${CPATH:+:$CPATH}"
+OUT="$(cd "$OUT" && pwd)"
+SRC="$(cd "$SRC" && pwd)"
 
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 
-# YTLite 3.0.1 era (2026-11-18)
-YTLITE_REPO="https://github.com/dayanch96/YTLite.git"
-YTLITE_REF="${YTLITE_REF:-cc6e6d1df481e9424478b8a84d5a56d8f4ab3466}"
+# YouTube Plus 6.0, tested against YouTube 21.43.5 (2026-11)
+YTLITE_DEB="${YTLITE_DEB:-https://github.com/dayanch96/YTLite/releases/download/v6.0/com.dvntm.ytlite_6.0_iphoneos-arm64.deb}"
 
-# YouPiP (2026-10-04)
+# YouPiP + the public header dumps it compiles against
 PIP_REPO="https://github.com/PoomSmart/YouPiP.git"
 PIP_REF="${PIP_REF:-034477a48c8ec18736e26d054106df88c1f0deb3}"
+YTH_REPO="https://github.com/PoomSmart/YouTubeHeader.git"
+PSH_REPO="https://github.com/PoomSmart/PSHeader.git"
+
+# YTLite / YouPiP both import <roothide.h>. Theos only ships it for roothide
+# builds, so drop an identity shim into the Theos include path.
+if [ -d "$THEOS/include" ]; then
+    cp -f "$REPO_ROOT/ios/shims/roothide.h" "$THEOS/include/roothide.h"
+fi
+export CPATH="$SRC:$REPO_ROOT/ios/shims${CPATH:+:$CPATH}"
 
 fetch() { # url dir ref
-    local url="$1" dir="$2" ref="$3"
+    local url="$1" dir="$2" ref="${3:-}"
     if [ ! -d "$dir/.git" ]; then
         git clone --quiet "$url" "$dir"
     fi
-    git -C "$dir" fetch --quiet --tags origin || true
-    if ! git -C "$dir" checkout --quiet "$ref" 2>/dev/null; then
-        git -C "$dir" fetch --quiet --depth 1 origin "$ref"
-        git -C "$dir" checkout --quiet "$ref"
+    if [ -n "$ref" ]; then
+        if ! git -C "$dir" checkout --quiet "$ref" 2>/dev/null; then
+            git -C "$dir" fetch --quiet --depth 1 origin "$ref"
+            git -C "$dir" checkout --quiet "$ref"
+        fi
     fi
-    echo "  source: $(git -C "$dir" rev-parse --short HEAD)"
+    echo "  source: $(basename "$dir") @ $(git -C "$dir" rev-parse --short HEAD)"
 }
 
-build() { # dir dylib-name
-    local dir="$1" name="$2" dylib
+build_source() { # dir dylib-name fatal(0/1)
+    local dir="$1" name="$2" fatal="${3:-1}" dylib
     make -C "$dir" clean >/dev/null 2>&1 || true
-    make -C "$dir" -j"$JOBS" DEBUG=0 FINALPACKAGE=1
+    if ! make -C "$dir" -j"$JOBS" DEBUG=0 FINALPACKAGE=1; then
+        if [ "$fatal" = "1" ]; then
+            echo "::error::${name} failed to build"
+            return 1
+        fi
+        echo "::warning::${name} failed to build - continuing without it"
+        return 0
+    fi
     dylib="$(find "$dir/.theos/obj" -name "${name}.dylib" -print -quit)"
     if [ -z "$dylib" ]; then
-        echo "::error::${name}.dylib was not produced"
-        return 1
+        if [ "$fatal" = "1" ]; then
+            echo "::error::${name}.dylib was not produced"
+            return 1
+        fi
+        echo "::warning::${name}.dylib was not produced - continuing without it"
+        return 0
     fi
     cp -f "$dylib" "$OUT/${name}.dylib"
     echo "  built:  ${name}.dylib ($(du -h "$OUT/${name}.dylib" | cut -f1))"
@@ -68,33 +87,26 @@ want() {
 }
 
 if want ytlite; then
-    echo "==> YTLite"
-    fetch "$YTLITE_REPO" "$SRC/YTLite" "$YTLITE_REF"
-    build "$SRC/YTLite" YTLite
-    # localisation / assets, loaded through [NSBundle pathForResource:@"YTLite" ofType:@"bundle"]
-    if [ -d "$SRC/YTLite/layout/Library/Application Support/YTLite.bundle" ]; then
-        rm -rf "$OUT/YTLite.bundle"
-        cp -R "$SRC/YTLite/layout/Library/Application Support/YTLite.bundle" "$OUT/YTLite.bundle"
-        echo "  bundle: YTLite.bundle"
+    echo "==> YouTube Plus (YTLite) release"
+    if [ ! -f "$OUT/ytlite.deb" ]; then
+        curl -fL --retry 3 --retry-delay 5 -o "$OUT/ytlite.deb" "$YTLITE_DEB"
     fi
+    echo "  deb:    $(du -h "$OUT/ytlite.deb" | cut -f1)"
 fi
 
 if want pip; then
     echo "==> YouPiP"
     fetch "$PIP_REPO" "$SRC/YouPiP" "$PIP_REF"
-    build "$SRC/YouPiP" YouPiP
+    fetch "$YTH_REPO" "$SRC/YouTubeHeader"
+    fetch "$PSH_REPO" "$SRC/PSHeader"
+    build_source "$SRC/YouPiP" YouPiP 0
 fi
 
 if want ytbypass; then
     echo "==> YTBypass (in-repo)"
-    make -C ios/tweaks clean >/dev/null 2>&1 || true
-    make -C ios/tweaks -j"$JOBS" DEBUG=0 FINALPACKAGE=1
-    dylib="$(find ios/tweaks/.theos/obj -name YTBypass.dylib -print -quit)"
-    [ -n "$dylib" ] || { echo "::error::YTBypass.dylib was not produced"; exit 1; }
-    cp -f "$dylib" "$OUT/YTBypass.dylib"
-    echo "  built:  YTBypass.dylib"
+    build_source "$REPO_ROOT/ios/tweaks" YTBypass 1
 fi
 
 echo
-echo "dylibs in $OUT:"
+echo "payload in $OUT:"
 ls -l "$OUT"
